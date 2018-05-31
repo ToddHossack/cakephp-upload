@@ -13,6 +13,7 @@ use Josegonzalez\Upload\File\Path\DefaultProcessor;
 use Josegonzalez\Upload\File\Transformer\DefaultTransformer;
 use Josegonzalez\Upload\File\Writer\DefaultWriter;
 use UnexpectedValueException;
+use RuntimeException;
 
 class UploadBehavior extends Behavior
 {
@@ -70,7 +71,7 @@ class UploadBehavior extends Behavior
 
     /**
      * Modifies the entity before it is saved so that uploaded file data is persisted
-     * in the database too.
+     * in the database too. On new entities, it defers fields to afterSave if they use primaryKey in the path.
      *
      * @param \Cake\Event\Event $event The beforeSave event that was fired
      * @param \Cake\ORM\Entity $entity The entity that is going to be saved
@@ -79,29 +80,26 @@ class UploadBehavior extends Behavior
      */
     public function beforeSave(Event $event, Entity $entity, ArrayObject $options)
     {
-        foreach ($this->config() as $field => $settings) {
-            if (Hash::get((array)$entity->get($field), 'error') !== UPLOAD_ERR_OK) {
-                continue;
+        $fields = ($entity->isNew()) ? $this->deferFields($entity) : $this->config();
+        return $this->writeFiles($fields,$event,$entity,$options);
+    }   
+   
+    /**
+     * Modifies the entity after it is saved with uploaded file data
+     *
+     * @param \Cake\Event\Event $event The afterSave event that was fired
+     * @param \Cake\ORM\Entity $entity The entity that was saved
+     * @param \ArrayObject $options the options passed to the save method
+     * @return void|false
+     */
+    public function afterSave(Event $event, Entity $entity, ArrayObject $options)
+    {
+        if(!empty($entity->_afterSave)) {
+            foreach($entity->_afterSave as $field => $data) {
+                $entity->$field = $data;
             }
-
-            $data = $entity->get($field);
-            $path = $this->getPathProcessor($entity, $data, $field, $settings);
-            $basepath = $path->basepath();
-            $filename = $path->filename();
-            $data['name'] = $filename;
-            $files = $this->constructFiles($entity, $data, $field, $settings, $basepath);
-
-            $writer = $this->getWriter($entity, $data, $field, $settings);
-            $success = $writer->write($files);
-
-            if ((new Collection($success))->contains(false)) {
-                return false;
-            }
-
-            $entity->set($field, $filename);
-            $entity->set(Hash::get($settings, 'fields.dir', 'dir'), $basepath);
-            $entity->set(Hash::get($settings, 'fields.size', 'size'), $data['size']);
-            $entity->set(Hash::get($settings, 'fields.type', 'type'), $data['type']);
+            $fieldConfig = array_intersect_key($this->config(),$entity->_afterSave);
+            return $this->writeFiles($fieldConfig,$event,$entity,$options);
         }
     }
 
@@ -224,5 +222,82 @@ class UploadBehavior extends Behavior
             ));
         }
         return $results;
+    }
+    
+    
+     /**
+     * Defers fields and related request data to afterSave method if 
+     * the field settings use {primaryKey} in the path.
+     * @param  \Cake\ORM\Entity $entity
+     * @returns array - Fields and settings with deferred fields filtered out.
+     */
+    protected function deferFields($entity)
+    {
+        $fields = $this->config();
+        $entity->_afterSave = [];
+        foreach ($fields as $field => $settings) {
+            if(strpos(Hash::get($settings, 'path',''),'{primaryKey}') !== false) {
+                $entity->_afterSave[$field] = $entity->get($field);
+                $entity->set($field,'');
+                unset($fields[$field]);
+            }
+        }
+        return $fields;
+    }
+    
+    /**
+     * Prepares and writes the entity file data for the provided fields.
+     * @param type $fields
+     * @param Event $event
+     * @param Entity $entity
+     * @param ArrayObject $options
+     * @return boolean
+     * @throws RuntimeException
+     */
+    protected function writeFiles($fields,Event $event, Entity $entity, ArrayObject $options)
+    {
+        foreach ($fields as $field => $settings) {
+            // Skip configuration setting
+            if (Hash::get((array)$entity->get($field), 'error') !== UPLOAD_ERR_OK) {
+                continue;
+            }
+
+            $data = $entity->get($field);
+            $path = $this->getPathProcessor($entity, $data, $field, $settings);
+            $basepath = $path->basepath();
+            $filename = $path->filename();
+            $data['name'] = $filename;
+            $files = $this->constructFiles($entity, $data, $field, $settings, $basepath);
+
+            $writer = $this->getWriter($entity, $data, $field, $settings);
+            $success = $writer->write($files);
+
+            if ((new Collection($success))->contains(false)) {
+                return false;
+            }
+
+            $entity->set($field, $filename);
+            $entity->set(Hash::get($settings, 'fields.dir', 'dir'), $basepath);
+            $entity->set(Hash::get($settings, 'fields.size', 'size'), $data['size']);
+            $entity->set(Hash::get($settings, 'fields.type', 'type'), $data['type']);
+        }
+        
+        if($event->name() === 'Model.afterSave' && $entity->dirty()) {
+            $result = $this->saveNoCallbacks($entity);
+            if(!$result) {
+                throw new RuntimeException(__('Some file data was not saved'));
+            }
+        }
+    }
+    
+    protected function saveNoCallbacks($entity)
+    {
+        $primaryKey = $this->_table->primaryKey();
+        $dirtyFields = $entity->extract($this->_table->schema()->columns(), true);
+        $result = (boolean) (!empty($entity->$primaryKey) 
+            ? $this->_table->updateAll($dirtyFields, [$primaryKey => $entity->$primaryKey]) : false);
+        $entity->clean();
+
+        return $result ? $entity : false;
     }
 }

@@ -19,10 +19,7 @@ trait DefaultTrait
         $defaultPath = 'webroot{DS}files{DS}{model}{DS}{field}{DS}';
         $path = Hash::get($this->settings, 'path', $defaultPath);
         if (strpos($path, '{primaryKey}') !== false) {
-            if ($this->entity->isNew()) {
-                throw new LogicException('{primaryKey} substitution not allowed for new entities');
-            }
-            if (is_array($this->table->getPrimaryKey())) {
+            if (is_array($this->table->primaryKey())) {
                 throw new LogicException('{primaryKey} substitution not valid for composite primary keys');
             }
         }

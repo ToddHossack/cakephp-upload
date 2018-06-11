@@ -17,7 +17,16 @@ use RuntimeException;
 
 class UploadBehavior extends Behavior
 {
+    
+    protected $_temporaryDir;
 
+    public function getTemporaryDir()
+    {
+        if(is_null($this->_temporaryDir)) {
+            $this->_temporaryDir = TMP . DS . uniqid();
+        }
+        return $this->_temporaryDir;
+    }
     /**
      * Initialize hook
      *
@@ -63,6 +72,12 @@ class UploadBehavior extends Behavior
                 continue;
             }
             if (Hash::get($dataArray, $field . '.error') !== UPLOAD_ERR_NO_FILE) {
+                // File uploaded
+                $tmpName = Hash::get($dataArray, $field .'.tmp_name','');
+                $name = Hash::get($dataArray, $field .'.name','');
+                if($tmpName && $name) {
+                    $data[$field]['uploaded_file'] = $this->getTemporaryDir() . $name;
+                }
                 continue;
             }
             unset($data[$field]);
